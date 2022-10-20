@@ -1,0 +1,158 @@
+---
+output: pdf_document
+---
+## Ejercicio 5
+
+Asumiendo que las muestras provienen de una distribución normal bivariada, querríamos
+contrastar la hipótesis
+$$H_0: \mu = (0.3804, 0.3758)^T$$
+Bajo $H_0$ podemos utilizar la estadística de prueba
+$$\frac{n-p}{p} (\bar{X} - \mu)^{T} S^{-1} (\bar{X} - \mu) \sim F_{(p,\ n-p)}$$
+Y la rechazamos cuando la estadística sea mayor al quantil del 95%, es decir, cuando
+$$\frac{n-p}{p} (\bar{X} - \mu)^{T} S^{-1} (\bar{X} - \mu) > F_{(p,\ n-p)}^{(0.95)}$$
+Calculemos todos los valores que vamos a necesitar con el siguiente bloque de código
+```{r}
+n <- 20
+p <- 2
+Xbar <- matrix(t(c(0.3745, 0.3719)))
+XbarT <- matrix(Xbar, nrow = 1, ncol = 2)
+mu <- matrix(t(c(0.3804, 0.3758)))
+muT <- matrix(mu, nrow = 1, ncol = 2)
+S <- 10^(-5) * matrix(c(1.843, 1.799,
+                        1.799, 1.836), nrow = 2, ncol = 2, byrow = TRUE)
+qf(0.95, p, n-p)
+((n-p) / p) * ((XbarT - muT) %*% solve(S) %*% (Xbar - mu))
+```
+Como nuestra estadística tuvo un valor de 55.9, y el quantil de la distribución F
+es 3.55, podemos rechazar la hipótesis nula porque la estadística cayó en la región
+de rechazo con $\alpha = 0.05$. Por lo tanto tenemos evidencia en contra de que
+la media sea la sugerida por la comisión.
+
+## Ejercicio 6
+
+Leamos primero los datos
+```{r}
+data <- read.delim("T1-6.txt", sep = "", header = F,
+                   col.names = c("Edad", "S1tot", "S1dif", "S2tot", "S2dif", "Grupo"))
+data$Grupo <- as.factor(data$Grupo)
+Grupo0 <- data[1:69,1:5]
+Grupo1 <- data[70:98,1:5]
+```
+
+### a)
+
+Grafiquemos el diagrama de dispersión
+```{r}
+plot(
+  data$S1tot,
+  data$S2tot,
+  col = data$Grupo,
+  xlab = "Estímulos totales S1",
+  ylab = "Estímulos totales S2"
+)
+legend(
+  x = "topleft",
+  legend = c("Grupo 0", "Grupo 1"),
+  fill = c("black", "red")
+)
+```
+
+Observando el gráfico es muy claro y evidente que los grupos tienen comportamientos
+muy diferentes. El Grupo 0 parece tener muchos menos estímulos totales que el Grupo 1
+en general, tanto para los estímulos del tipo S1 como los del S2. \
+Podemos esperar con mucha certeza que estos dos grupos tengan propiedades y comportamientos
+diferentes.
+
+### b)
+
+Calculemos primero los vectores de medias para ambos grupos
+```{r}
+mu_0 <- matrix(t(colMeans(Grupo0)))
+mu_1 <- matrix(t(colMeans(Grupo1)))
+mu_0
+mu_1
+```
+
+Ahora las matrices de covarianza estimadas:
+
+```{r}
+n0 = length(Grupo0[,1])
+n1 = length(Grupo1[,1])
+((n0 - 1)/n0) * cov(Grupo0)
+((n0 - 1)/n0) * cov(Grupo1)
+```
+
+Finalmente las matrices de correlación
+
+```{r}
+cor(Grupo0)
+cor(Grupo1)
+```
+
+### c)
+
+Si definimos $\mu_i$ como la media teórica de las variables aleatorias del Grupo $i$, nos gustaría usar la prueba de hipótesis
+$$H_0: \mu_0 = \mu_1$$
+Desafortunadamente en este caso no sabemos nada acerca de las matrices de covarianzas
+de ambos grupos observados, por lo que haremos el siguiente procedimiento: \
+Dado que tenemos más muestras del grupo 0 que del grupo 1, tomaremos muestras aleatorias
+del grupo 0 y haremos pruebas pareadas sobre las medias de estas muestras reducidas del
+grupo 0 contrastadas con las del grupo 1. Asumiremos covarianza $\neq 0$ en estas muestras
+pareadas ya que como tomamos subconjuntos aleatorios del grupo 0 y además por el 
+contexto de la muestra es muy difícil que los estímulos visuales en un sujeto no puedan
+tener al menos una mínima correlación con las de algún otro, ya sea que tengan esclerosis
+múltiple o no. Es decir, entre dos pacientes sin MS es normal asumir que los estímulos
+de uno sean parecidos a los del otro. Lo mismo para dos pacientes con MS. \
+El caso en el que un paciente tenga MS y el otro no, podemos argumentar que quizás
+la correlación sea más baja, sin embargo descartaremos que sean 0 absoluto porque
+un paciente con MS debe tener estímulos muy parecidos a los de un paciente sano **más**
+(o multiplicados por) un factor. Es decir asumimos que los estímulos de un paciente
+con MS están en función de los estímulos visuales que tendría si no tuviera la MS.
+
+
+Ahora, las pruebas que haremos con las muestras reducidas y las del grupo 1 serán usando
+la estadística de prueba
+$$\frac{n-p}{p}(\bar{D} - \mu_d)^TS_d^{-1}(\bar{D}-\mu_d) \sim F_{(p, n-p)}$$
+
+donde $n=29,\ p =5,\ D=Grupo_{0red} - Grupo_1,$ y $\mu_d = \mu_0 - \mu_1$ (o sea
+bajo $H_0: \mu_d = 0$) 
+
+Realicemos 100 veces el muestreo y la prueba y contemos cuántas veces rechazamos
+y cuántas no encontramos evidencia en contra de asumir que las medias son iguales,
+(rechazaremos cuando nuestro estadístico sea mayor al cuantil $F_{(5,\ 24)}^{(0.95)}$)
+```{r}
+n=29
+p=5
+contador=0
+quantil <- qf(0.95, 5, 24)
+set.seed(1)
+for (i in 1:100) {
+  Xi <- Grupo0[sample(nrow(Grupo0), 29),]
+  D <- Xi - Grupo1
+  Sd <- ((n-1)/n) * cov(D)
+  muD <- matrix(t(colMeans(D)))
+  muDt <- t(muD)
+  statistic <- ((n-p) / p) * muDt %*% solve(Sd) %*% muD
+  if (statistic > quantil)
+    contador = contador + 1
+}
+contador
+```
+
+Las 100 veces que realizamos la prueba fue rechazada, por lo que podemos concluir
+que con $\alpha = 0.05$ rechazamos la idea de que el grupo 0 y el grupo 1 tengan el
+mismo vector de medias.
+
+Si pudiéramos asumir igualdad en las matrices de covarianzas teóricas de ambos grupos,
+es decir $\Sigma_0 = \Sigma_1$, otra forma de encontrar evidencia en contra es usando
+la prueba $T^2$ de Hotteling:
+```{r}
+#install.packages("DescTools")
+library("DescTools")
+HotellingsT2Test(Grupo0, Grupo1)
+```
+
+En este caso también rechazamos la hipótesis nula con un $p-value = 2.051 \times10^{-13} < \alpha$.
+
+Por lo que en efecto hay evidencia de que los grupos no tienen el mismo vector de medias.
+
