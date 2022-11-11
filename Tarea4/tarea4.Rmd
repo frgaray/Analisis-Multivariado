@@ -1,0 +1,349 @@
+---
+title: "Tarea 4"
+output: pdf_document
+---
+
+## Ejercicio 1
+
+Comenzaremos cargando las librerías necesarias y cargando nuestra tabla de distancias.
+
+```{r, message=F}
+library(magrittr)
+library(dplyr)
+library(ggpubr)
+library(MASS)
+
+dist<-read.csv("distanciasMex.csv", header=TRUE, row.names=1)
+```
+
+Procedemos a ajustar el EMD y renombramos las coordenadas de los puntos.
+
+```{r, message=F, warning=F}
+mds <- dist %>%
+  dist() %>%          
+  cmdscale() %>%
+  as_tibble()
+colnames(mds) <- c("Dim.1", "Dim.2")
+```
+
+Grafiquemos los puntos ahora. Esperaríamos encontrar un gráfico bastante equivalente
+al de la República Mexicana. Veamos lo obtenido.
+
+```{r, message=F, warning=F}
+ggscatter(mds, x = "Dim.1", y = "Dim.2", 
+          label = rownames(dist),
+          size = 1,
+          repel = TRUE)
+```
+
+No tuvimos tanta suerte. Sin embargo, si ponemos atención no es tan diferente al
+mapa de la República, sólo hay que hacer una pequeña rotación de los puntos.
+Hagámosla y veamos el resultado.
+
+```{r, message=F, warning=F}
+A<-matrix(data=c(0,1,-1,0),nrow=2,ncol=2,byrow=TRUE)
+mds_rot<- t(A%*%t(mds))
+mds_rot<- data.frame(mds_rot)
+colnames(mds_rot)<- c("Dim.1","Dim.2")
+
+ggscatter(mds_rot, x = "Dim.1", y = "Dim.2", 
+          label = rownames(dist),
+          size = 1,
+          repel = TRUE, main="Puntos obtenidos de la matriz de distancias entre ciudades de México")
+```
+
+Definitivamente conseguimos un mejor resultado. Quizás el resultado no es exactamente
+igual al mapa de la República Mexicana pero podemos observar que hay muchas similitudes,
+salvo por algunas ciudades (como Mexicali), podríamos decir que es una muy buena
+aproximación.
+
+\pagebreak
+## Ejercicio 3
+
+Leemos los datos y cargamos los paquetes necesarios.
+
+```{r, message=F}
+library(cluster)
+library(factoextra)
+library(mclust)
+library(ggplot2)
+data(ruspini)
+```
+
+Comencemos escalando los datos para hacer las variables comparables y obteniendo la
+matriz de distancias. Tomaremos como base la distancia euclidiana entre nuestras muestras
+ya que no tenemos mucha información de los datos, y en particular estos no son de tipo
+factor.
+
+```{r}
+datos <- scale(ruspini)
+distance <- get_dist(datos)
+```
+
+Hagamos diferentes métodos de análisis de conglomerados para hacer una aproximación
+de cuántos grupos es que hay en estos datos.
+
+### K-Medias
+
+Ahora estimemos un número adecuado de clusters.
+
+Afortunadamente, tenemos únicamente dos variables en los datos, por lo que los 
+podemos visualizar en un scatterplot normal y hacernos una idea.
+
+```{r}
+plot(datos)
+```
+
+Gracias al sactterplot estaríamos tentados a decir que son 4 grupos. Sin embargo esto
+no es nada riguroso y tuvimos suerte en este caso de sólo tener dos variables (aunque
+en otros casos podríamos usar componentes principales, aún seguiría siendo muy poco
+riguroso).\
+Por lo que veamos cuántos clusters nos indican diferentes métodos.
+
+Usando el método del codo, nos indica que 4 clusters es lo adecuado, como habíamos
+intuido. Lo podemos ver en la siguiente gráfica.
+```{r}
+set.seed(1)
+fviz_nbclust(datos, kmeans, method = "wss")
+```
+
+Por el método de promedio de siluetas, nos indica que 5 son los estimados.
+
+```{r}
+fviz_nbclust(datos, kmeans, method = "silhouette")
+```
+
+Y finalmente, con el método estadístico Gap, también nos indica que hay 4 grupos:
+
+```{r}
+set.seed(1)
+gap_stat <- clusGap(datos, FUN = kmeans, nstart = 25,
+                    K.max = 10, B = 50)
+fviz_gap_stat(gap_stat)
+```
+
+Por lo que decidiremos que 4 serán el número de clusters que tomaremos para nuestro
+análisis final.
+
+Veamos cómo se ven agrupados nuestros datos por medio de K-Medias.
+
+```{r}
+set.seed(1)
+kmeans4 <- kmeans(datos, 4, nstart = 25)
+fviz_cluster(kmeans4, datos)
+```
+
+### Jerárquico (Aglomerativo)
+
+Analicemos con las diferentes ligas cuál de estas nos da un mejor coeficiente de
+aglomeración.
+
+```{r, message=F}
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+
+ac <- function(x) {
+  agnes(datos, method = x)$ac
+}
+library(purrr) 
+map_dbl(m, ac)
+```
+
+Como podemos ver, el método Ward nos dio estructuras aglomerativas más fuertes, pues
+su coeficiente es el más cercano a 1.
+
+Hagamos el modelo con éste método y analicemos su dendograma correspondiente.
+
+```{r}
+agnes <- agnes(distance, method = "ward")
+pltree(agnes, cex = 0.6, hang = -1, main = "Dendrograma con AGNES")
+```
+
+El dendograma nos está gritando que lo cortemos en 4. Cortémoslo así y veamos los
+resultados en una gráfica como en K-Medias.
+
+```{r}
+plot(agnes, cex = 0.6, which.plots = 2, main = "Dendrograma con AGNES")
+rect.hclust(agnes, k = 4, border = 2:5)
+
+clusters <- cutree(agnes, k = 4)
+fviz_cluster(list(data = datos, cluster = clusters))
+```
+
+### Jerárquico (Divisivo)
+
+Ahora hagamos un modelo divisivo. Veamos su coeficiente divisivo y su respectivo
+dendograma.
+
+```{r}
+diana <- diana(datos)
+diana$dc
+pltree(diana, cex = 0.6, hang = -1, main = "Dendograma con DIANA")
+```
+
+Tenemos un buen coeficiente divisivo, indicio de buenas estructuras de clusters,
+y el dendograma nos vuelve a indicar que cortemos en 4. Hagámoslo y grafiquemos.
+
+```{r}
+plot(diana, cex = 0.6, which.plots = 2, main = "Dendrograma con DIANA")
+rect.hclust(diana, k = 4, border = 2:5)
+
+clusters <- cutree(diana, k = 4)
+fviz_cluster(list(data = datos, cluster = clusters))
+```
+
+### Clasificación Basada en Modelos
+
+Hagamos un ajuste basado en modelos para nuestros datos escalados y veamos un poco
+la salida.
+
+```{r}
+mc <- Mclust(datos)
+summary(mc)
+```
+
+Podemos ver que nos arrojó un modelo orientado en la identidad y con formas y volúmenes
+iguales.\
+A diferencia de los ajustes anteriores, este basado en modelos nos indica que hay
+5 clusters. El grupo número 3 tiene tres tuplas únicamente, sospechoso.\
+Grafiquemos los grupos para contrastarlos con los anteriores ajustes.
+
+```{r, warning=F, message=F}
+fviz_mclust(mc, "classification", geom = "point", 
+            pointsize = 1.5, palette = "jco")
+fviz_mclust(mc, "uncertainty", palette = "jco")
+```
+
+En esta ocasión, uno de los grupos que teníamos fue seccionado en dos, los clusters
+3 y 4 en estos basados en modelos. Es muy raro decir que el grupo 3 es un cluster, ya que
+este cluster sólo tiene tres elementos. Además que en la gráfica de incertidumbre,
+hay bastante confusión entre un rojo y un gris. Pareciera que para este método
+tampoco sería tan descaballo pensar en 4 clusters.
+
+### Conclusiones
+
+A pesar de que el método basado en modelos y la gráfica de siluetas nos parecían
+indicar que la opción sería tomar 5 grupos, todos los demás modelos, tanto el aglomerativo
+como el divisivo, el método del codo, el estadístico Gap, y nuestra intuición
+nos indican que la mejor opción es concluir que hay 4 grupos.
+
+Las gráficas de todos los métodos que concluyeron que hay 4 grupos son prácticamente
+idénticas, así que no hay mucha confusión de en qué grupo meter a las observaciones.
+
+*Cabe recalcar que estos análisis fueron hechos con la métrica euclidiana. Podemos
+realizar el proceso con diferentes métricas si no obtuviéramos un resultado convincente.
+Sin embargo creemos que las conclusiones son contundentes y no es necesario utilizar otra métrica.
+
+## Ejercicio 4
+
+Comenzamos nuevamente cargando las librerías y los datos necesarios, así como
+renombrando las variables del dataframe.
+
+```{r, message=F}
+library(tidyverse)
+library(caret)
+library(MASS)
+library(pROC)
+
+datos<-read.table("wais.txt")
+
+datos<-datos[,c(1,3,4,5,6)] #Ignoramos la segunda columna porque funciona sólo como ID
+colnames(datos)<-c("grupo", "information", "similarities", "arithmetic","p. completion")
+
+datos$grupo<-as.factor(datos$grupo)
+levels(datos$grupo)<-c("gpo 1", "gpo 2")
+```
+
+Ahora dividiremos los datos en una proporción 70-30 para el training-test.
+
+```{r}
+set.seed(100)
+training.samples <- datos$grupo %>%
+  createDataPartition(p = 0.7, list = FALSE)
+train.data <- datos[training.samples, ]
+test.data <- datos[-training.samples, ]
+```
+
+También normalizamos los datos (las variables categóricas se ingoran automáticamente)
+y transformamos los datos para la creación del modelo.
+
+```{r}
+preproc.param <- train.data %>% 
+  preProcess(method = c("center", "scale"))
+
+train.transformed <- preproc.param %>% predict(train.data)
+test.transformed <- preproc.param %>% predict(test.data)
+```
+
+
+Ahora pasemos al ajuste de modelos, tanto lineal como cuadrático.
+
+### Discriminante Lineal
+
+Ajustemos el modelo y analicemos un poco la salida.
+
+```{r}
+lda <- lda(grupo~., data = train.transformed)
+lda
+```
+
+Como podemos ver hay mucha más probabilidad de pertenecer al grupo 1. Quizás una pista
+de esto es debido a que de entrada nosotros sabíamos que había más individuos del grupo
+1 sumado a que los coeficientes del discriminante lineal son negativos en su totalidad.\
+No es obligatorio esto último (pues transformamos los datos), pero al hacer combinaciones
+lineales con las muestras de prueba es más probable que estas sean menores a 1.
+
+Desafortunadamente para nuestro modelo las distribuciones de las clases no se ven
+muy normal que digamos, como podemos ver a continuación.
+
+```{r, include=F}
+plot(lda)
+```
+
+Sin embargo veamos los pronósticos del modelo y veamos qué tal lo hizo con el grupo
+de prueba, así como la precisión general del modelo.
+
+```{r}
+predictions <- predict(lda, test.transformed)
+table(predictions$class, test.transformed[,1])
+mean(predictions$class==test.transformed$grupo)
+```
+
+Tuvimos un único error con este modelo y una precisión del 93%, por lo que podemos
+decir que estamos ante un buen modelo.
+
+Por último grafiquemos también su curva ROC.
+
+```{r, message=F}
+res.roc <- roc(test.data$grupo, predictions$posterior[,1])
+plot.roc(res.roc, print.auc = TRUE)
+```
+
+También tenemos una buena curva ROC. Consideramos que este es un buen modelo.
+
+### Discriminante Cuadrático
+
+Ajustemos el modelo y veamos un poco la salida
+```{r}
+qda <- qda(grupo~., data = train.transformed)
+qda
+```
+
+Tenemos probablidades idénticas al del modelo LDA anterior. Pero veamos su desempeño
+prediciendo.
+
+```{r}
+predictions <- predict(qda, test.transformed)
+table(predictions$class, test.transformed[,1])
+mean(predictions$class == test.transformed$grupo)
+```
+
+En esta ocasión, el modelo cuadrático lo hizo muy mal en comparación del lineal,
+por lo que optamos por quedarnos con el lineal para este caso. (Graficamos por último
+su curva ROC, que también es bastante mala en comparación con el anterior AUC)
+
+```{r, message=F}
+res.roc <- roc(test.data$grupo, predictions$posterior[,1])
+plot.roc(res.roc, print.auc = TRUE)
+```
+
