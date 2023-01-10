@@ -1,0 +1,308 @@
+---
+title: "Proyecto Covid"
+output: pdf_document
+---
+## Análisis de Casos Sars-Cov-2
+
+### Retirando Variables
+
+Comenzamos analizando superficialmente la base de datos.\
+La base contenía muchos valores nulos, en particular había algunas variables que
+tenían más del $20\%$ de valores faltantes, por lo que las eliminamos de la base
+ya que no podríamos asegurarnos de hacer una buena imputación.\
+Las variables que fueron retiradas de los modelos fueron las siguientes:\
+
+| Variable       | Descripción del Diccionario de Datos                |
+|----------------|-----------------------------------------------------|
+| FECDEF         | Fecha de defunción                                  |
+| INTUBADO       | Si el paciente está intubado                        |
+| ANOSMIA        | Si presentó anosmia                                 |
+| DISGEUSIA      | Si presentó disgeusia                               |
+| TXCROBIA       | Si recibió tratamiento antimicrobial                |
+| ANTIVIRA       | Tipo de antiviral que se administró                 |
+| FECINITXANTIVI | Fecha que se inicio el tratamiento antiviral        |
+| CONOCASO       | Si tuvo contacto con algun caso de COVID            |
+| CONANIMA       | Con que animales tuvo contacto                      |
+| FECVAEST       | Fecha de la vacunación                              |
+| TOMMUE*        | Se tomó muestra del paciente                        |
+| PUERPERIO      | Si presenta puerperio                               |
+| DIASPUERP      | Cuántos días de puerperio tiene                     |
+| UCI            | Si se encuentra en una unidad de cuidados intesivos |
+
+*TOMMUE se eliminó porque era constante "SI" en toda la base.\
+
+```{r, include=F}
+Datos <- read.csv("datos-covid.csv", na.strings = c("", "NA", "SE IGNORA"), stringsAsFactors = T)
+
+colMeans(is.na(Datos) * 100) # Porcentaje de NA's
+
+# Quitar variables con más del 20% de NA's. TOMMUE constante "SÍ"
+nombres <- c("FECDEF", "INTUBADO", "ANOSMIA", "DISGEUSIA", "TXCROBIA", "ANTIVIRA",
+             "FECINITXANTIVI", "CONOCASO", "CONANIMA", "FECVAEST", "TOMMUE",
+             "PUERPERIO", "DIASPUERP", "UCI")
+Datos <- Datos[, !names(Datos) %in% nombres]
+  
+# Cambiando a factor CVEENTUNI (clave entidad federativa)
+Datos[, "CVEENTUNI"] <- factor(Datos[, "CVEENTUNI"])
+# Listo para la imputación
+```
+
+### Imputación de los Valores Faltantes
+
+Después de eliminar estas variables, imputamos los datos faltantes según correspondiera:\
+Con el método `norm` para las variables continuas,\
+El método de imputación `logreg` para las binarias,\
+Y el método `polyreg` para las categóricas.\
+
+
+```{r, include=F}
+#install.packages("mice")
+library(mice)
+
+init <- mice(Datos, maxit=0)
+meth <- init$method
+predM <- init$predictorMatrix
+
+# Método de imputación para datos binarios
+meth[c("ORIGEN", "SEXO", "TIPACIEN", "DIAGPROB")] <- "logreg"
+# Método de imputación para datos categóricos nominales
+meth[c("SECTOR", "CVEENTUNI", "ENTIDAD", "OCUPACIO", "SERINGRE", "RESDEFIN")] <- "polyreg"
+# Método de imputación para datos numéricos
+meth[c("EDAD")] <- "norm"
+
+# Visualizamos los métodos de imputación por variable
+meth
+set.seed(1)
+imputed <- mice(Datos, method = meth, predictorMatrix = predM, maxit=0)
+imputed <- complete(imputed) 
+summary(imputed) # Estos son los datos imputados
+colMeans(is.na(imputed) * 100) # Porcentaje de NA's después de la imputación (0%)
+# Datos imputados
+```
+
+### Reduciendo las Categorías del Tipo de Evolución
+
+Ya que imputamos en su totalidad la base, procedimos a intentar hacer grupos de las
+observaciones para ver si podíamos reducir a menos categorías la variable `EVOLUCI`.\
+Intentamos diversos métodos de análisis de conglomerados con diferentes métricas,
+pero el modelo que mejor conglomeró los datos fue haciendo aglomeramiento jerárquico,
+métrica `gower` para observaciones y métrica `ward.D` para clusters.\
+A continuación les mostramos esta conglomeración mencionada:
+
+```{r, include=F}
+library(cluster)
+library(fpc)
+
+Datos <- within(imputed, {
+  FECHREG  <- ordered(FECHREG)
+  FECINGRE <- ordered(FECINGRE)
+  FECINISI <- ordered(FECINISI)
+})
+
+dissMatrix <- daisy(Datos, metric="gower")
+
+pc = pamk(dissMatrix, krange=2:6, criterion="asw") #aquí se prefieren 2 grupos
+pc[2:3]
+k <- pc$nc
+
+#' Función con la que contamos cuántas observaciones pertenecen a qué cluster y
+#' a qué tipo de evolución.
+#' Es una partición por clusters y niveles a predecir.
+#' Por ejemplo: level="alta-mejoria", cluster=2, conteo=28...
+#' Es decir, 28 de las observaciones de alta-mejoria están en el cluster 2.
+#' Así para todos los niveles del factor y todos los clusters.
+count.clusters.by.levels <- function(Datos, k, levels, auxList) {
+  countClust <- data.frame(1, 2, 3)[-1,]
+  colnames(countClust) <- c("level", "cluster", "count")
+  for (level in levels) {
+    for (cluster in 1:k) {
+      count <- 0
+      for (i in 1:nrow(Datos)) {
+        actualLevel <- auxList[i,1]
+        actualClust <- auxList[i,2]
+        if (actualLevel == level & actualClust == cluster)
+          count <- count + 1
+      }
+      countClust[nrow(countClust)+1,] <- c(level, cluster, count)
+    }
+  }
+  return(countClust)
+}
+
+
+# Probemos múltiples valores de k
+kmean <- pam(dissMatrix, k) # Modelo Kmeans
+
+clusterEvol <- data.frame(Datos[,"EVOLUCI"], kmean$clustering) # Datos frame auxiliar
+levels <- levels(clusterEvol[1,1])
+
+count.clusters.by.levels(Datos, k, levels, clusterEvol)
+
+#' Cluster 1: en trat, seguimiento dom y termi
+#' Cluster 2: en trat, seguimiento dom y termi
+#' Cluster 3: alta mejoría, caso grave, defuncion
+#' Cluster 4: en trat, seguimiento dom y termi
+#' 
+#' clus 1: en trat, seguimientos
+#' clus 2: en trat, seguimientos
+#' clus 3: alta mejor, caso grave, defun
+```
+
+```{r, include=F}
+library(factoextra)
+
+clustDistances <- c("ward.D", "ward.D2", "single", "complete")
+
+for (meth in clustDistances) {
+  jer <- hclust(d = dissMatrix, method = meth)
+  plot(jer, main = meth)
+} # Single y complete un fallo
+
+hclustD <- hclust(dissMatrix, method="ward.D")
+hclustD2 <- hclust(dissMatrix, method="ward.D2")
+
+k <- 4
+plot(hclustD)
+dClust <- cutree(hclustD, k)
+clusterEvol <- data.frame(Datos[,"EVOLUCI"], dClust) # Datos frame auxiliar
+count.clusters.by.levels(Datos, k, levels, clusterEvol)
+#' Parece tener sentido separar en dos clusters si juntamos los clusters 1, 2 y 4.
+#' Es decir, tomar dos clusters parece ser buena decisión
+#' Cluster 1 = en trat, referencia, seg dom, seg terminado
+#' Cluster 3 = alta-cur, alta-mejor, alta-tras, alta-vol, caso grav, caso grav-tras, caso no-grav, def
+
+
+```
+
+```{r, echo=F}
+hclustD <- hclust(dissMatrix, method="ward.D")
+plot(hclustD)
+```
+
+Aunque el cluster jerárquico nos parece indicar que podríamos cortar en 3 grupos,
+analizando los grupos, dos de ellos terminaron colapsando en uno mismo, ya que los
+tipos de evolución más prevalentes de covid en ambos cluster eran los mismos.\
+
+Es por esto que elegimos terminar reduciendo a dos niveles la variable evolución,
+y con esto logramos mejorar muchísimo la interpretación porque podemos pasar a preguntarnos
+únicamente si los nuevos casos serán casos donde no se complique el Sars-Cov-2,
+o si sí se complicará.\
+
+```{r, include=F}
+#' Reducimos a dos variables. Si se complica el paciente o si no se complica
+levels(Datos$EVOLUCI) <- list(nocomplica="ALTA - CURACION",
+                             nocomplica="ALTA - MEJORIA",
+                             nocomplica="ALTA - TRASLADO",
+                             nocomplica="ALTA - VOLUNTARIA",
+                             complica="CASO GRAVE -",
+                             complica="CASO GRAVE - TRASLADO",
+                             nocomplica="CASO NO GRAVE",
+                             complica="DEFUNCION",
+                             nocomplica="EN TRATAMIENTO",
+                             nocomplica="REFERENCIA",
+                             nocomplica="SEGUIMIENTO DOMICILIARIO",
+                             nocomplica="SEGUIMIENTO TERMINADO")
+
+levels(Datos$EVOLUCI) # Referencia nocomplica
+#' Vamos a calificar usando repeated holdout a diferentes modelos para poder predecir
+#' nuevas observaciones.
+str(Datos)
+```
+
+### Modelos Predictivos
+
+Habiendo optado por considerar únicamente dos categorías, si el paciente se complicará
+o no se complicará, entrenamos diferentes modelos de predicción y los calificamos
+usando el método `Repeated Holdout` con $B=50$ (es decir, repetimos 50 veces
+el entrenamiento de los modelos tomando particiones aleatorias del $80\%$, y el promedio
+de estos 50 entrenamientos es la califación del modelo final).\
+Mostramos en la siguiente tabla los resultados obtenidos, ordenando los modelos
+del mejor calificado en la precisión global al peor calificado.
+
+| Modelo            | Global     | Sensibilidad | Especificidad |
+|-------------------|------------|--------------|---------------|
+| Random Forest     | 0.9231431  | 0.9320920    | 0.8627907     |
+| LDA               | 0.9194022  | 0.9233452    | 0.8928094     |
+| Regresión: Probit | 0.9178744  | 0.9482259    | 0.7131783     |
+| Regresión: Logit  | 0.9171780  | 0.9480760    | 0.7087968     |
+| Naive Classifier  | 0.9029029  | 0.9045977    | 0.8914729     |
+
+Como podemos apreciar, el modelo ganador en precisión global es el Random Forest.
+Sin embargo es de muy buena información saber que tenemos otros modelos para respaldar
+futuras predicciones, en especial el LDA, que es el mejor calificado en cuanto a 
+especificidad. Es decir, que para reducir la cantidad de falsos negativos es un muy
+buen modelo y no está de más tenerlo en consideración.\
+*El nivel de referencia de los modelos es "No se complica".
+
+#### Variables Más Influyentes\
+
+
+Afortunadamente tenemos modelos predictores bastante bastante buenos, con más del
+$90\%$ de precisión global todos, sólo nos falta analizar qué variables son las más influyentes
+según los modelos.\
+Para esto mostraremos dos tablas. Primero una tabla listando qué variables fueron las más decisivas
+para saber si el paciente se complicará, y después una para las variables más decisivas
+para saber si el paciente no se complicará.
+
+| Modelo           | Variables Más Influyentes (el paciente se complicará)                                                                                                                                                                                                          |
+|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Random Forest    | Tipo de Servicio de Hospital al que Ingresó, Tipo de Paciente (Hospitalizado/Ambulatorio), Diagnósito Probable, Diagnóstico Clínico, Entidad Federativa, Entidad Federativa de la Unidad Médica, Ocupación, Edad                   |
+| LDA              | Ingreso a UCI, Hospitalizado, Urgencias Adultos, Sector IMSS-Oportunidades, Diagnóstico Probable de IRAG, Diagnostico Clinico Afirmativo, Resultado Prueba Covid                            |
+| Regresión: Logit | Tipo de Servicio de Hospital al que Ingreso, Sector Medico, Hospitalizado, Resultado Definitivo de la Prueba Covid, Clave Entidad Federativa en c(7, 11, 5, 27, 15, 26, 32, 21, 10, 28, 19), Ocupación, Diagnóstico Probable IRAG) |
+
+Es decir, parece que todos los modelos coinciden en la mayoría de cosas tales como:\
+
+* El tipo de servicio de hospital al que ingresó (urgencias, neumología, ... consultar
+el catálogo de SERINGRE para más información)
+
+* Si fue hospitalizado
+
+* Si fue diagnósticado probablemente con IRAG (Infección Respiratoria Aguda Grave)
+
+* El sector médico donde se encuentra el paciente (consultar catálogo de SECTOR)
+
+* Ocupación
+
+* Resultado de la prueba covid
+
+Incluso encontramos algunos detalles raros para el caso del random forest o la regresión
+logística, como que algunas entidades federativas también juegan un papel importante
+en el resultado final según estos modelos.\
+
+| Modelo           | Variables Más Influyentes (el paciente no se complicará)                                                                                                                                                                                       |
+|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| LDA              | Servicio de Hospital al que ingresó es UCIN, Resultado Definitivo de la Prueba Covid es Corona 229E o Influenza AH1N1 PMD, Ingresó a Urgencias-Cirugía                                                                                         |
+| Regresión: Logit | Servicio de Hospital al que ingresó es UCIN, Ocupación Dentista, Ocupación Laboratorista, Resultado Definitivo de la Prueba Covid es Corona 229E o Influenza AH1N1 PMD, El Sector Municipal, Ingresó a Urgencias-Cirugía, Ocupación Enfermera  |
+
+Nuevamente los modelos coinciden en las mismas variables, salvo la regresión logística
+que tiene más variables en comparación.\
+
+Entonces, las variables que nos pueden servir para saber si el paciente no se complicará,
+lo podemos reducir a:\
+
+*Si el paciente ingresó a UCIN
+
+*Si su resultado definitivo de la prueba Covid es Corona 229E o Influenza
+
+*Si el paciente ingresó a urgencias para cirugía
+
+Las variables que no esperaríamos de primera entrada que fueran tan decisivas para
+saber si un paciente no se complicará, son las variables que no aparecen en el
+análisis de discriminante pero sí en la regresión logística. Como por ejemplo,
+enfermeras y dentistas tienen mayores probabilidades de no complicarse según los modelos,
+al igual que si el paciente es de un sector municipal.\
+
+### Conclusiones Finales
+
+
+
+Gracias a estos modelos, podemos hacer uso de ellos para futuros pacientes y saber
+con buena probabilidad cómo avanzará su caso.\
+Por otra parte, desafortunadamente las variables con mayor poder predictivo de estos
+modelos no son fáciles de cambiar si es que queremos mejorar las probabilidades de que
+los pacientes no se compliquen, sólo podemos predecir dado lo que ya tenga el paciente,
+tales como sus síntomas, su ocupación, el resultado de su prueba Sars-Cov-2, etc.
+mencionadas en el punto anterior.\
+Quizás lo único que podríamos hacer para evitar complicar a un paciente si es que
+se quiere cuidar a tiempo, sería intentar ingresar a una UCIN (si fuese posible)
+o intentar entrar a urgencias de cirugía.
